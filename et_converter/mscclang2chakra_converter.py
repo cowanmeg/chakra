@@ -20,7 +20,7 @@ from chakra.et_def.et_def_pb2 import (
     GlobalMetadata
 )
 
-COLLECTIVE_SIZE = int(1024 * 1024) # Bytes
+# COLLECTIVE_SIZE = int(1024 * 1024) # Bytes
 HARDCODE_LOCAL_BW = 50
 # 1000 b/c microsecond to nanosecond. Refer to Workload::issue_replay
 ## HARDCODED. REMOVE WHEN IMPLEMENT COLLECTIVE API
@@ -179,10 +179,12 @@ class MSCCL2ChakraConverter:
         self,
         input_filename: str,
         output_filename: str,
+        collective_size: int,
         logger: logging.Logger
     ) -> None:
         self.input_filename = input_filename
         self.output_filename = output_filename
+        self.collective_size = collective_size
         self.logger = logger
         self.next_node_id = 0
 
@@ -225,17 +227,13 @@ class MSCCL2ChakraConverter:
         step_map = {}
         tree = ElementTree.parse(self.input_filename)
         root = tree.getroot()
+        num_chunks = int(root.attrib['nchunksperloop'])
+        chunk_size = int(self.collective_size / num_chunks)
 
         # Read the XML file and create ET Trace nodes. 
         for gpu in root.findall('gpu'):
             gpu_id = int(gpu.attrib['id'])
-            num_chunks = int(gpu.attrib['i_chunks'])
-            if num_chunks == 0:
-                num_chunks = int(gpu.attrib['o_chunks'])
-            chunk_size = int(COLLECTIVE_SIZE / num_chunks)
-            ## HARDCODED. REMOVE WHEN IMPLEMENT COLLECTIVE API
-            if 'allgather' in self.input_filename:
-                chunk_size = int(COLLECTIVE_SIZE)
+
             node_map[gpu_id] = {}
             step_map[gpu_id] = {}
             self.reset_node_id()

@@ -70,6 +70,13 @@ def main() -> None:
         required="Text" in sys.argv,
         help="Number of training passes")
     parser.add_argument(
+        "--collective_size",
+        type=int,
+        default=0,
+        required="msccl" in sys.argv,
+        help="Size of collective in bytes"
+    )
+    parser.add_argument(
         "--log_filename",
         type=str,
         default="debug.log",
@@ -100,6 +107,7 @@ def main() -> None:
             converter = MSCCL2ChakraConverter(
                 args.input_filename, 
                 args.output_filename, 
+                args.collective_size,
                 logger)
             converter.convert()
         else:

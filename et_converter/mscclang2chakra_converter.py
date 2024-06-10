@@ -71,9 +71,11 @@ class MSCCLSendStep(MSCCLStep):
         tb_xml_node: ElementTree.Element,
         step_id: int, 
         node_id: int,
+        gpu_id: int,
         comm_data_size_bytes: int
     ) -> None:
         tb_id = tb_xml_node.attrib['id']
+        self.src = gpu_id
         self.dst = int(tb_xml_node.attrib['send'])
         self.tag = int(tb_xml_node.attrib['chan'])
 
@@ -85,10 +87,13 @@ class MSCCLSendStep(MSCCLStep):
                                     int64_val=COMM_SEND_NODE))
         node.attr.append(ChakraAttr(name="comm_size",
                                     int64_val=comm_data_size_bytes))
+        node.attr.append(ChakraAttr(name="comm_src",
+                                    int32_val=self.src))
         node.attr.append(ChakraAttr(name="comm_dst",
                                     int32_val=self.dst))
         node.attr.append(ChakraAttr(name="comm_tag",
                                     int32_val=self.tag))
+        node.attr.append(ChakraAttr(name="is_cpu_op", bool_val=False))
         self.node = node
 
 class MSCCLReceiveStep(MSCCLStep):
@@ -97,10 +102,12 @@ class MSCCLReceiveStep(MSCCLStep):
         tb_xml_node: ElementTree.Element,
         step_id: int, 
         node_id: int,
+        gpu_id: int,
         comm_data_size_bytes: int
     ) -> None:
         tb_id = tb_xml_node.attrib['id']
         self.src = int(tb_xml_node.attrib['recv'])
+        self.dst = gpu_id
         self.tag = int(tb_xml_node.attrib['chan'])
 
         node = Node()
@@ -113,8 +120,11 @@ class MSCCLReceiveStep(MSCCLStep):
                                     int64_val=comm_data_size_bytes))
         node.attr.append(ChakraAttr(name="comm_src",
                                     int32_val=self.src))
+        node.attr.append(ChakraAttr(name="comm_dst",
+                                    int32_val=self.dst))
         node.attr.append(ChakraAttr(name="comm_tag",
                                     int32_val=self.tag))
+        node.attr.append(ChakraAttr(name="is_cpu_op", bool_val=False))
         self.node = node
 
 class MSCCLReceiveReduceComputeStep(MSCCLStep):
@@ -124,10 +134,12 @@ class MSCCLReceiveReduceComputeStep(MSCCLStep):
         step_id: int, 
         recv_node_id: int,
         comp_node_id: int,
+        gpu_id: int,
         comm_data_size_bytes: int
     ) -> None:
         tb_id = tb_xml_node.attrib['id']
         self.src = int(tb_xml_node.attrib['recv'])
+        self.dst = gpu_id
         self.tag = int(tb_xml_node.attrib['chan'])
 
         recv_node = Node()
@@ -140,8 +152,11 @@ class MSCCLReceiveReduceComputeStep(MSCCLStep):
                                     int64_val=comm_data_size_bytes))
         recv_node.attr.append(ChakraAttr(name="comm_src",
                                     int32_val=self.src))
+        recv_node.attr.append(ChakraAttr(name="comm_dst",
+                                    int32_val=self.dst))
         recv_node.attr.append(ChakraAttr(name="comm_tag",
                                     int32_val=self.tag))
+        node.attr.append(ChakraAttr(name="is_cpu_op", bool_val=False))
         self.recv_node = recv_node
 
         comp_node = Node()
@@ -150,6 +165,7 @@ class MSCCLReceiveReduceComputeStep(MSCCLStep):
         comp_node.type = COMP_NODE
         comp_node.duration_micros = calculate_comp_time(comm_data_size_bytes)
         comp_node.data_deps.append(recv_node.id)
+        node.attr.append(ChakraAttr(name="is_cpu_op", bool_val=False))
         self.comp_node = comp_node
 
     def encode_message(
@@ -247,14 +263,14 @@ class MSCCL2ChakraConverter:
                     step_map[gpu_id][tb_id][step_id] = step
                     et_node_id = self.get_et_node_id()
                     if step.attrib['type'] == "s":
-                        node = MSCCLSendStep(tb, step_id, et_node_id, chunk_size * chunk_cnt)
+                        node = MSCCLSendStep(tb, step_id, et_node_id, gpu_id, chunk_size * chunk_cnt)
                         node_map[gpu_id][tb_id][step_id] = node
                     elif step.attrib['type'] == "r":
-                        node = MSCCLReceiveStep(tb, step_id, et_node_id,  chunk_size * chunk_cnt)
+                        node = MSCCLReceiveStep(tb, step_id, et_node_id,  gpu_id, chunk_size * chunk_cnt)
                         node_map[gpu_id][tb_id][step_id] = node
                     elif step.attrib['type'] == "rrc":
                         comp_et_node_id = self.get_et_node_id()
-                        node = MSCCLReceiveReduceComputeStep(tb, step_id, et_node_id, comp_et_node_id, chunk_size * chunk_cnt)
+                        node = MSCCLReceiveReduceComputeStep(tb, step_id, et_node_id, comp_et_node_id, gpu_id, chunk_size * chunk_cnt)
                         node_map[gpu_id][tb_id][step_id] = node
                     elif step.attrib['type'] == "nop":
                         node = MSCCLNopStep()

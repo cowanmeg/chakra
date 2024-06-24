@@ -55,7 +55,7 @@ def main() -> None:
         "--num_dims",
         type=int,
         default=None,
-        required=True,
+        required="msccl" not in sys.argv,
         help="Number of dimensions in the network topology")
     parser.add_argument(
         "--num_npus",
@@ -75,6 +75,13 @@ def main() -> None:
         default=0,
         required="msccl" in sys.argv,
         help="Size of collective in bytes"
+    )
+    parser.add_argument(
+        "--chunk_size",
+        type=int,
+        default=0,
+        required="msccl" in sys.argv,
+        help="Chunk size in bytes"
     )
     parser.add_argument(
         "--log_filename",
@@ -108,6 +115,7 @@ def main() -> None:
                 args.input_filename, 
                 args.output_filename, 
                 args.collective_size,
+                args.chunk_size,
                 logger)
             converter.convert()
         else:

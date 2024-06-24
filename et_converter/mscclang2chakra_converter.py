@@ -72,16 +72,19 @@ class MSCCLSendStep(MSCCLStep):
         step_id: int, 
         node_id: int,
         gpu_id: int,
-        comm_data_size_bytes: int
+        comm_data_size_bytes: int,
+        unroll_iteration: int,
+        unroll_total: int,
     ) -> None:
         tb_id = tb_xml_node.attrib['id']
         self.src = gpu_id
         self.dst = int(tb_xml_node.attrib['send'])
         self.tag = int(tb_xml_node.attrib['chan'])
+        self.offset = int(tb_xml_node[step_id].attrib["srcoff"]) + unroll_iteration * unroll_total
 
         node = Node()
         node.id = node_id
-        node.name = f'COMM_SEND_NODE_tb{tb_id}_step{step_id}'
+        node.name = f'COMM_SEND_NODE_tb{tb_id}_step{step_id}_itr{unroll_iteration}'
         node.type = COMM_SEND_NODE
         node.attr.append(ChakraAttr(name="comm_type",
                                     int64_val=COMM_SEND_NODE))
@@ -93,6 +96,7 @@ class MSCCLSendStep(MSCCLStep):
                                     int32_val=self.dst))
         node.attr.append(ChakraAttr(name="comm_tag",
                                     int32_val=self.tag))
+        node.attr.append(ChakraAttr(name='buf_off', int32_val = self.offset))
         node.attr.append(ChakraAttr(name="is_cpu_op", bool_val=False))
         self.node = node
 
@@ -103,16 +107,19 @@ class MSCCLReceiveStep(MSCCLStep):
         step_id: int, 
         node_id: int,
         gpu_id: int,
-        comm_data_size_bytes: int
+        comm_data_size_bytes: int,
+        unroll_iteration: int,
+        unroll_total: int
     ) -> None:
         tb_id = tb_xml_node.attrib['id']
         self.src = int(tb_xml_node.attrib['recv'])
         self.dst = gpu_id
-        self.tag = int(tb_xml_node.attrib['chan'])
+        self.tag = int(tb_xml_node.attrib['chan']) 
+        self.offset = int(tb_xml_node[step_id].attrib["dstoff"]) + unroll_iteration * unroll_total
 
         node = Node()
         node.id = node_id
-        node.name = f'COMM_RECV_NODE_tb{tb_id}_step{step_id}'
+        node.name = f'COMM_RECV_NODE_tb{tb_id}_step{step_id}_itr{unroll_iteration}'
         node.type = COMM_RECV_NODE
         node.attr.append(ChakraAttr(name="comm_type",
                                     int64_val=COMM_RECV_NODE))
@@ -124,6 +131,7 @@ class MSCCLReceiveStep(MSCCLStep):
                                     int32_val=self.dst))
         node.attr.append(ChakraAttr(name="comm_tag",
                                     int32_val=self.tag))
+        node.attr.append(ChakraAttr(name='buf_off', int32_val = self.offset))
         node.attr.append(ChakraAttr(name="is_cpu_op", bool_val=False))
         self.node = node
 
@@ -135,16 +143,19 @@ class MSCCLReceiveReduceComputeStep(MSCCLStep):
         recv_node_id: int,
         comp_node_id: int,
         gpu_id: int,
-        comm_data_size_bytes: int
+        comm_data_size_bytes: int,
+        unroll_iteration: int,
+        unroll_total: int
     ) -> None:
         tb_id = tb_xml_node.attrib['id']
         self.src = int(tb_xml_node.attrib['recv'])
         self.dst = gpu_id
         self.tag = int(tb_xml_node.attrib['chan'])
+        self.offset = int(tb_xml_node[step_id].attrib["dstoff"]) + unroll_iteration * unroll_total
 
         recv_node = Node()
         recv_node.id = recv_node_id
-        recv_node.name = f'COMM_RECV_NODE_tb{tb_id}_step{step_id}'
+        recv_node.name = f'COMM_RECV_NODE_tb{tb_id}_step{step_id}_itr{unroll_iteration}'
         recv_node.type = COMM_RECV_NODE
         recv_node.attr.append(ChakraAttr(name="comm_type",
                                     int64_val=COMM_RECV_NODE))
@@ -156,16 +167,17 @@ class MSCCLReceiveReduceComputeStep(MSCCLStep):
                                     int32_val=self.dst))
         recv_node.attr.append(ChakraAttr(name="comm_tag",
                                     int32_val=self.tag))
-        node.attr.append(ChakraAttr(name="is_cpu_op", bool_val=False))
+        recv_node.attr.append(ChakraAttr(name='buf_off', int32_val = self.offset))
+        recv_node.attr.append(ChakraAttr(name="is_cpu_op", bool_val=False))
         self.recv_node = recv_node
 
         comp_node = Node()
         comp_node.id = comp_node_id
-        comp_node.name = f"COMP_NODE_tb{tb_id}_step{step_id}"
+        comp_node.name = f"COMP_NODE_tb{tb_id}_step{step_id}_itr{unroll_iteration}"
         comp_node.type = COMP_NODE
         comp_node.duration_micros = calculate_comp_time(comm_data_size_bytes)
         comp_node.data_deps.append(recv_node.id)
-        node.attr.append(ChakraAttr(name="is_cpu_op", bool_val=False))
+        comp_node.attr.append(ChakraAttr(name="is_cpu_op", bool_val=False))
         self.comp_node = comp_node
 
     def encode_message(
@@ -196,11 +208,13 @@ class MSCCL2ChakraConverter:
         input_filename: str,
         output_filename: str,
         collective_size: int,
+        chunk_size: int,
         logger: logging.Logger
     ) -> None:
         self.input_filename = input_filename
         self.output_filename = output_filename
         self.collective_size = collective_size
+        self.chunk_size = chunk_size
         self.logger = logger
         self.next_node_id = 0
 
@@ -241,40 +255,59 @@ class MSCCL2ChakraConverter:
     def convert(self) -> None:
         node_map = {}
         step_map = {}
+        base_steps = {}
         tree = ElementTree.parse(self.input_filename)
         root = tree.getroot()
-        num_chunks = int(root.attrib['nchunksperloop'])
-        chunk_size = int(self.collective_size / num_chunks)
+        min_num_chunks = int(root.attrib['nchunksperloop'])
+        # Check that the user specified chunk size divides the max chunk size of the algorithm
+        chunk_size_max = int(self.collective_size / min_num_chunks)
+        if chunk_size_max % self.chunk_size != 0:
+            print(f'User specified chunk size {self.chunk_size} is not valid. Must divide {chunk_size_max}')
+        chunk_size = self.chunk_size
+        unroll_factor = int(chunk_size_max / self.chunk_size)
+        inplace = bool(root.attrib['inplace'])
 
         # Read the XML file and create ET Trace nodes. 
         for gpu in root.findall('gpu'):
             gpu_id = int(gpu.attrib['id'])
+            min_src_chunks = int(gpu.attrib['i_chunks'])
+            min_dst_chunks = int(gpu.attrib['o_chunks'])
+            # If the algorithm is inplace, then the input/output buffers alias each other.
+            if min_src_chunks == 0 and inplace:
+                min_src_chunks = int(gpu.attrib['o_chunks'])
+            if min_dst_chunks == 0 and inplace:
+                min_dst_chunks = int(gpu.attrib['i_chunks'])
 
             node_map[gpu_id] = {}
             step_map[gpu_id] = {}
+            base_steps[gpu_id] = {}
             self.reset_node_id()
             for tb in gpu.findall('tb'):
                 tb_id = int(tb.attrib['id'])
                 node_map[gpu_id][tb_id] = {}
                 step_map[gpu_id][tb_id] = {}
-                for step in tb.findall('step'):
-                    step_id = int(step.attrib['s'])
-                    chunk_cnt = int(step.attrib['cnt'])
-                    step_map[gpu_id][tb_id][step_id] = step
-                    et_node_id = self.get_et_node_id()
-                    if step.attrib['type'] == "s":
-                        node = MSCCLSendStep(tb, step_id, et_node_id, gpu_id, chunk_size * chunk_cnt)
-                        node_map[gpu_id][tb_id][step_id] = node
-                    elif step.attrib['type'] == "r":
-                        node = MSCCLReceiveStep(tb, step_id, et_node_id,  gpu_id, chunk_size * chunk_cnt)
-                        node_map[gpu_id][tb_id][step_id] = node
-                    elif step.attrib['type'] == "rrc":
-                        comp_et_node_id = self.get_et_node_id()
-                        node = MSCCLReceiveReduceComputeStep(tb, step_id, et_node_id, comp_et_node_id, gpu_id, chunk_size * chunk_cnt)
-                        node_map[gpu_id][tb_id][step_id] = node
-                    elif step.attrib['type'] == "nop":
-                        node = MSCCLNopStep()
-                        node_map[gpu_id][tb_id][step_id] = node
+                total_tb_steps = len(tb)
+                base_steps[gpu_id][tb_id] = total_tb_steps
+                for unroll_iter in range(unroll_factor):
+                    for step in tb.findall('step'):
+                        base_step_id = int(step.attrib['s'])
+                        chunk_cnt = int(step.attrib['cnt'])
+                        step_id = base_step_id + unroll_iter * total_tb_steps
+                        step_map[gpu_id][tb_id][step_id] = (step, unroll_iter)
+                        et_node_id = self.get_et_node_id()
+                        if step.attrib['type'] == "s":
+                            node = MSCCLSendStep(tb, base_step_id, et_node_id, gpu_id, chunk_size * chunk_cnt, unroll_iter, min_src_chunks)
+                            node_map[gpu_id][tb_id][step_id] = node
+                        elif step.attrib['type'] == "r":
+                            node = MSCCLReceiveStep(tb, base_step_id, et_node_id,  gpu_id, chunk_size * chunk_cnt, unroll_iter, min_dst_chunks)
+                            node_map[gpu_id][tb_id][step_id] = node
+                        elif step.attrib['type'] == "rrc":
+                            comp_et_node_id = self.get_et_node_id()
+                            node = MSCCLReceiveReduceComputeStep(tb, base_step_id, et_node_id, comp_et_node_id, gpu_id, chunk_size * chunk_cnt, u, 4)
+                            node_map[gpu_id][tb_id][step_id] = node
+                        elif step.attrib['type'] == "nop":
+                            node = MSCCLNopStep()
+                            node_map[gpu_id][tb_id][step_id] = node
 
         # For each ET Trace node, add the parent dependency information
         for gpu_id in node_map:
@@ -283,9 +316,12 @@ class MSCCL2ChakraConverter:
                 for step_id, et_node in node_map[gpu_id][tb_id].items():
                     if type(et_node) is MSCCLNopStep:
                         continue
-                    step = step_map[gpu_id][tb_id][step_id]
+                    step, unroll_iter = step_map[gpu_id][tb_id][step_id]
                     dep_tb_id = int(step.attrib['depid'])
                     dep_step_id = int(step.attrib['deps'])
+                    if (dep_tb_id != -1):
+                        dep_step_id += unroll_iter * base_steps[gpu_id][tb_id]
+
 
                     # Parent by data dependency
                     if dep_tb_id != -1:

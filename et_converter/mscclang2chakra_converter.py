@@ -220,12 +220,12 @@ class MSCCL2ChakraConverter:
 
     # Creates the global metadata info that is added to the start of all ET files.
     def create_global_metadata(self):
-        input_text = ""
-        with open(self.input_filename, "r") as input_file:
-            input_text = input_file.read()
+        # input_text = ""
+        # with open(self.input_filename, "r") as input_file:
+        #     input_text = input_file.read()
         attr = [
             ChakraAttr(name="schema", string_val="1.0.2-chakra.0.0.4"),
-            ChakraAttr(name="input_file", string_val=input_text)
+            ChakraAttr(name="input_filename", string_val=self.input_filename)
         ]
         metadata = GlobalMetadata(attr=attr)
         return metadata
@@ -303,7 +303,7 @@ class MSCCL2ChakraConverter:
                             node_map[gpu_id][tb_id][step_id] = node
                         elif step.attrib['type'] == "rrc":
                             comp_et_node_id = self.get_et_node_id()
-                            node = MSCCLReceiveReduceComputeStep(tb, base_step_id, et_node_id, comp_et_node_id, gpu_id, chunk_size * chunk_cnt, u, 4)
+                            node = MSCCLReceiveReduceComputeStep(tb, base_step_id, et_node_id, comp_et_node_id, gpu_id, chunk_size * chunk_cnt, unroll_iter, min_dst_chunks)
                             node_map[gpu_id][tb_id][step_id] = node
                         elif step.attrib['type'] == "nop":
                             node = MSCCLNopStep()
@@ -320,7 +320,7 @@ class MSCCL2ChakraConverter:
                     dep_tb_id = int(step.attrib['depid'])
                     dep_step_id = int(step.attrib['deps'])
                     if (dep_tb_id != -1):
-                        dep_step_id += unroll_iter * base_steps[gpu_id][tb_id]
+                        dep_step_id += unroll_iter * base_steps[gpu_id][dep_tb_id]
 
 
                     # Parent by data dependency
@@ -333,10 +333,10 @@ class MSCCL2ChakraConverter:
 
                     # Parent by control
                     if step_id != 0:
-                        prev_step_id = step_id -1
+                        prev_step_id = step_id - 1
                         prev_node = node_map[gpu_id][tb_id][prev_step_id]
                         while type(prev_node) is MSCCLNopStep:
-                            prev_step = step_map[gpu_id][tb_id][prev_step_id]
+                            prev_step, unroll_iter = step_map[gpu_id][tb_id][prev_step_id]
                             dep_tb_id = int(prev_step.attrib['depid'])
                             dep_step_id = int(prev_step.attrib['deps'])
                             dep_node = node_map[gpu_id][dep_tb_id][dep_step_id]
